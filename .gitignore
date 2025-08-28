@@ -1,0 +1,29 @@
+# IDE
+.idea/
+.vscode/
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Composer (applications keep composer.lock committed)
+**/vendor/
+**/composer.phar
+# composer.lock is intentionally tracked (e.g., app/composer.lock)
+
+# Terraform (root + infra/)
+**/.terraform/
+**/terraform.tfstate
+**/terraform.tfstate.backup
+**/.terraform.tfstate.lock.info
+**/terraform.tfstate.d/
+**/*.tfplan
+**/plan.out
+**/crash.log
+**/crash.*.log
+
+# Non-versioned backend and local variable files
+infra/backend.hcl
+infra/backend_s3.tf
+infra/*.tfvars
+infra/*.auto.tfvars

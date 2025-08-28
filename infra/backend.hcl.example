@@ -1,0 +1,14 @@
+# Example Terraform backend configuration for remote state in AWS S3 with DynamoDB locking
+# Copy this file to infra/backend.hcl and adjust values for your AWS account.
+# Then run: make tf-init
+
+bucket         = "your-terraform-state-bucket"
+key            = "development/php-app-runner-demo/terraform.tfstate"  # adjust per env (development/staging/production)
+region         = "eu-central-1"
+dynamodb_table = "terraform-locks"                            # create beforehand (hash key: LockID [String])
+encrypt        = true
+
+# TIP:
+# - We recommend one S3 bucket per organization with prefixes per project/env.
+# - Enable bucket versioning for recovery.
+# - Create the DynamoDB table with on-demand capacity or adequate RCU/WCU.

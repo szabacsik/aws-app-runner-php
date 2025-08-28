@@ -1,0 +1,9 @@
+# Optional remote backend definition for S3. Copy this file to backend_s3.tf to enable S3 backend.
+# Remote state is recommended for teams, but this project defaults to local state for simplicity.
+# To enable remote state:
+#  1) Copy this file to infra/backend_s3.tf
+#  2) Create and edit infra/backend.hcl with your bucket/key/region/table (see backend.hcl.example)
+#  3) Run: make tf-init
+terraform {
+  backend "s3" {}
+}

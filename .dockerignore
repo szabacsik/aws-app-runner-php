@@ -1,0 +1,7 @@
+# Ignore everything by default to minimize build context
+**
+
+# Allow only what's needed to build the runtime image
+!Dockerfile
+!.dockerignore
+!app/public/**
