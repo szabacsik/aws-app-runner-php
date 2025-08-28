@@ -103,9 +103,9 @@ Targets
 - `make get-curl` — GET the service URL (auto-adds https:// if missing, follows redirects with -L, pretty-prints JSON when possible).
 - `make get-status` — Print HTTP status for the service URL (auto-adds https:// if missing, follows redirects with -L).
 - `make get-identity` — Print current AWS identity (account, ARN, userId).
-- docker-clean-local — Remove the locally built ECR-tagged image and dangling images (destructive, local only).
-- clean — Remove Terraform working dirs/state remnants, plans, crash logs, Composer artifacts (vendor/, composer.lock), JS artifacts (node_modules/, lockfiles), PHPUnit cache, and OS cruft. **DESTRUCTIVE**: removes vendor/ and composer.lock.
-- pristine — Runs `down` (destroys cloud infra), then `clean`, then removes provider lock files and local Docker images. **HIGHLY DESTRUCTIVE**: nukes generated artifacts and locks; after this you must re-init (terraform init, composer install, etc.).
+- `make docker-clean-local` — Remove the locally built ECR-tagged image and dangling images (destructive, local only).
+- `make clean` — Remove Terraform working dirs/state remnants, plans, crash logs, Composer artifacts (vendor/, composer.lock), JS artifacts (node_modules/, lockfiles), PHPUnit cache, and OS cruft. **DESTRUCTIVE**: removes vendor/ and composer.lock.
+- `make pristine` — Runs `down` (destroys cloud infra), then `clean`, then removes provider lock files and local Docker images. **HIGHLY DESTRUCTIVE**: nukes generated artifacts and locks; after this you must re-init (terraform init, composer install, etc.).
 
 > ⚠️ DANGER: `clean` and especially `pristine` are destructive. They delete generated artifacts, caches, lock files, and (for `pristine`) also destroy cloud resources and remove local images. Use with care.
 
@@ -198,19 +198,19 @@ Verification examples:
 
 ## Troubleshooting
 
-### Terraform/AWS – „No valid credential sources found”
-- Ok: A default AWS profil használata nem ajánlott; a projekt névvel ellátott profilt vár.
-- Megoldás: Állíts be és használj nevezett profilt minden futtatásnál.
+### Terraform/AWS — "No valid credential sources found"
+- Reason: Using the default AWS profile is not recommended; this project expects a named profile.
+- Fix: Configure and use a named profile for every run.
 
-Parancsok:
+Commands:
 ```bash
-# Válaszd ki a profilt (példa: private)
+# Select the profile (example: private)
 export AWS_PROFILE=private
 
-# Opcionális, ha nincs a configban
+# Optional, if not defined in your config
 export AWS_REGION=eu-central-1
 
-# Ellenőrzés
+# Verify
 aws sts get-caller-identity
 
 # Terraform
@@ -218,7 +218,7 @@ terraform -chdir=infra init
 terraform -chdir=infra plan
 ```
 
-Rövid megjegyzés: Ne használj default profilt; mindig nevezett profilt adj meg az AWS_PROFILE változóval.
+Short note: Do not use the default profile; always set a named profile via the AWS_PROFILE variable.
 
 - “No service URL found”: Apply infra first (`make up` or `make tf-apply`).
 - The helper targets now auto-add https:// and follow redirects, so a bare hostname output from Terraform won’t cause 301 anymore.
