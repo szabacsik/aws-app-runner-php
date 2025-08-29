@@ -52,6 +52,71 @@ Important notes (networking and cost)
 5. Check status:
    - `make get-status`
 
+## Autoscaling & instance size
+
+**What’s configured by default**
+- **Instance size**: pinned to **1 vCPU / 2 GB** via Terraform (`instance_configuration { cpu = "1024", memory = "2048" }` in `infra/apprunner.tf`) for consistent behavior across environments.
+- **Autoscaling targets** (App Runner):
+  - **min_size = 1**, **max_size = 2**
+  - **max_concurrency = 100** (target concurrency per instance). When sustained concurrency per instance exceeds ~100, App Runner scales out (up to 2 instances). When load drops, it scales in.
+
+**How to test scaling quickly (ApacheBench)**
+1. Ensure the service is up and you have the URL:
+   ```bash
+   make get-url
+   ```
+
+2. Generate sustained load. For example, 10k requests at 200 concurrent connections:
+
+   ```bash
+   ab -n 10000 -c 200 https://$(make -s get-url)/
+   ```
+
+   Or with **hey** (a modern, single-binary alternative to ab):
+
+   ```bash
+   # Duration-based test: run for 2 minutes at 200 concurrent requests
+   hey -z 2m -c 200 https://$(make -s get-url)/
+   ```
+
+   * `-z 2m` runs for a fixed duration (here: 2 minutes).
+   * `-c 200` sets concurrency. Increase this to push beyond the per-instance target (`max_concurrency = 100`) and trigger scale-out.
+
+   If you prefer a fixed **request count** instead of a fixed duration:
+
+   ```bash
+   # Request-count test: send 10,000 requests with concurrency 200
+   hey -n 10000 -c 200 https://$(make -s get-url)/
+   ```
+
+   This level of concurrency typically exceeds the per-instance target and should trigger a scale-out (1 → 2 active instances).
+
+**How to observe it**
+
+* In the app’s root response (`GET /`), the JSON includes `core.hostname`. Under load, responses should show different hostnames as traffic is balanced across instances.
+* In AWS Console (App Runner → your service), watch **Active instances** and request/concurrency metrics grow during the test and drop afterwards.
+
+**Tips for demos**
+
+* To make scaling more obvious in short tests, you can temporarily lower the target and raise the ceiling in `infra/apprunner.tf`:
+
+  ```hcl
+  resource "aws_apprunner_auto_scaling_configuration_version" "this" {
+    max_concurrency = 20   # lower trigger threshold for demos
+    min_size        = 1
+    max_size        = 4    # allow more instances for visibility
+  }
+  ```
+
+  Then:
+
+  ```bash
+  make tf-plan
+  make tf-apply
+  ```
+
+  Revert to the defaults after the demo.
+
 ## Environments (development, staging, production)
 This project uses a Terraform variable `environment` to tailor names and tags. Default is `development`.
 
