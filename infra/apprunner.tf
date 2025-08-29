@@ -38,6 +38,12 @@ resource "aws_apprunner_service" "this" {
     }
   }
 
+  # Pin instance size for consistent performance across environments
+  instance_configuration {
+    cpu    = "1024"   # 1 vCPU
+    memory = "2048"   # 2 GB
+  }
+
   network_configuration {
     egress_configuration {
       egress_type = "DEFAULT"
