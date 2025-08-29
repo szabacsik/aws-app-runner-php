@@ -69,14 +69,22 @@ Important notes (networking and cost)
 2. Generate sustained load. For example, 10k requests at 200 concurrent connections:
 
    ```bash
-   ab -n 10000 -c 200 https://$(make -s get-url)/
+   ab -n 10000 -c 200 "$(make -s get-url)/"
    ```
+
+   > **Note:** `make get-url` already returns a full `https://…` URL. Do **not** prepend `https://` yourself; use "$(make -s get-url)/" as shown.
+
+   > **Tip (ApacheBench):** If your JSON body varies slightly between responses (e.g., dynamic timestamps or per-instance hostnames), `ab` may show `Failed requests: Length`. This is not an HTTP error. Use the `-l` flag to accept variable lengths:
+   >
+   > ```bash
+   > ab -l -n 10000 -c 200 "$(make -s get-url)/"
+   > ```
 
    Or with **hey** (a modern, single-binary alternative to ab):
 
    ```bash
    # Duration-based test: run for 2 minutes at 200 concurrent requests
-   hey -z 2m -c 200 https://$(make -s get-url)/
+   hey -z 2m -c 200 "$(make -s get-url)/"
    ```
 
    * `-z 2m` runs for a fixed duration (here: 2 minutes).
@@ -86,15 +94,17 @@ Important notes (networking and cost)
 
    ```bash
    # Request-count test: send 10,000 requests with concurrency 200
-   hey -n 10000 -c 200 https://$(make -s get-url)/
+   hey -n 10000 -c 200 "$(make -s get-url)/"
    ```
 
    This level of concurrency typically exceeds the per-instance target and should trigger a scale-out (1 → 2 active instances).
 
+ > Different load tools report different numbers (protocol, connection model, and timing windows differ). Focus on **Active instances** and steady-state error-free throughput to validate scaling.
+
 **How to observe it**
 
 * In the app’s root response (`GET /`), the JSON includes `core.hostname`. Under load, responses should show different hostnames as traffic is balanced across instances.
-* In AWS Console (App Runner → your service), watch **Active instances** and request/concurrency metrics grow during the test and drop afterwards.
+* In AWS Console (App Runner → your service), watch **Active instances** and request/concurrency metrics increase during the test and decrease afterwards.
 
 **Tips for demos**
 
