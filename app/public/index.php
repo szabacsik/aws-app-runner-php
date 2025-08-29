@@ -44,6 +44,7 @@ $app->get('/', function () {
         'core' => [
             'php_version' => phpversion(),
             'env' => $appEnv,
+            'hostname' => gethostname(),
         ],
         'framework' => [
             'name' => 'Phalcon',
