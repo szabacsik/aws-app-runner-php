@@ -13,6 +13,12 @@ resource "aws_apprunner_auto_scaling_configuration_version" "this" {
   max_concurrency                 = 100
   max_size                        = 2
   min_size                        = 1
+
+  # Ensure a new ASC version is created and attached to the service before the old version is destroyed.
+  # This avoids "InvalidRequestException: ... used by one or more services" during updates.
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 resource "aws_apprunner_service" "this" {
