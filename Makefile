@@ -4,6 +4,8 @@ SHELL := /bin/bash
 # Avoid calling terraform during Makefile parsing; default to eu-central-1 and allow override via make/env
 AWS_REGION ?= eu-central-1
 IMAGE_TAG ?= latest
+ENV ?= development
+TF_DIR := infra/live/$(ENV)
 
 # Container CLI: Docker only (Podman not supported)
 DOCKER := docker
@@ -47,74 +49,78 @@ help:
 # Terraform lifecycle
 ## Initialize Terraform (local state only)
 tf-init:
-	terraform -chdir=infra init
+	terraform -chdir=$(TF_DIR) init -upgrade
+	terraform -chdir=$(TF_DIR) fmt -recursive
 
 ## Format Terraform code
 tf-fmt:
-	terraform -chdir=infra fmt -recursive
+	terraform -chdir=$(TF_DIR) fmt -recursive
 
 ## Validate Terraform configuration
 tf-validate: tf-init
-	terraform -chdir=infra validate
+	terraform -chdir=$(TF_DIR) validate
 
 ## Plan Terraform changes
-tf-plan:
-	terraform -chdir=infra plan
+tf-plan: tf-init
+	terraform -chdir=$(TF_DIR) plan
 
 ## Apply Terraform changes
-tf-apply:
-	terraform -chdir=infra apply -auto-approve
+tf-apply: tf-init
+	terraform -chdir=$(TF_DIR) apply -auto-approve
 
 ## Destroy Terraform-managed infrastructure
-tf-destroy:
-	terraform -chdir=infra destroy -auto-approve
+tf-destroy: tf-init
+	terraform -chdir=$(TF_DIR) destroy -auto-approve
 
 ## Print all Terraform outputs (read-only)
 tf-get-outputs:
-	terraform -chdir=infra output
+	terraform -chdir=$(TF_DIR) output
 
 ## Convenience: destroy everything (calls tf-destroy)
-down: tf-init tf-destroy
+down: tf-destroy
 	@echo "Infrastructure destroyed. ECR repository force-deleted if non-empty."
 
-# Create just the ECR repository first so we can push the initial image before creating the App Runner service
-## Bootstrap ECR repository only (needed before first image push)
-bootstrap-ecr: tf-init
-	terraform -chdir=infra apply -target=aws_ecr_repository.this -auto-approve
+## Ensure ECR exists in selected environment before first push
+tf-ensure-ecr: tf-init
+	terraform -chdir=$(TF_DIR) apply -auto-approve -target=module.app.aws_ecr_repository.this
 
-# Login to ECR registry without AWS CLI (uses Terraform ECR auth token)
-## Login to ECR Docker registry (no AWS CLI required)
+# Docker login/build/push using AWS CLI
 ecr-login:
-	@set -euo pipefail; \
-	terraform -chdir=infra apply -refresh-only -target=data.aws_ecr_authorization_token.current -auto-approve >/dev/null; \
-	REG=$$(terraform -chdir=infra output -raw ecr_proxy_endpoint | sed -e 's#^https://##'); \
-	TOK=$$(terraform -chdir=infra output -raw ecr_token); \
-	USER=$$(printf %s "$$TOK" | base64 -d | cut -d: -f1); \
-	PASS=$$(printf %s "$$TOK" | base64 -d | cut -d: -f2-); \
-	echo "Logging in to $$REG as $$USER"; \
-	echo "$$PASS" | $(DOCKER) login --username "$$USER" --password-stdin "$$REG"
+	@REG=$$(terraform -chdir=$(TF_DIR) output -raw ecr_repo_url | sed 's@/.*@@'); \
+	aws ecr get-login-password --region $(AWS_REGION) | $(DOCKER) login --username AWS --password-stdin $$REG
 
 # Build image (based on provided base image) and tag with ECR repo URI and IMAGE_TAG
 ## Build Docker image tagged for ECR
 build:
 	@set -euo pipefail; \
-	ECR_REPO_URI=$$(terraform -chdir=infra output -raw ecr_repo_url); \
+	ECR_REPO_URI=$$(terraform -chdir=$(TF_DIR) output -raw ecr_repo_url); \
 	echo "Building image $$ECR_REPO_URI:$(IMAGE_TAG)"; \
 	$(DOCKER) build -t $$ECR_REPO_URI:$(IMAGE_TAG) .
 
 ## (No-op) tag alias to keep flow explicit
 tag:
 	@set -euo pipefail; \
-	ECR_REPO_URI=$$(terraform -chdir=infra output -raw ecr_repo_url); \
+	ECR_REPO_URI=$$(terraform -chdir=$(TF_DIR) output -raw ecr_repo_url); \
 	echo "Tagging local image as $$ECR_REPO_URI:$(IMAGE_TAG)"; \
 	$(DOCKER) tag $$ECR_REPO_URI:$(IMAGE_TAG) $$ECR_REPO_URI:$(IMAGE_TAG)
 
 ## Push Docker image to ECR
 push: ecr-login
 	@set -euo pipefail; \
-	ECR_REPO_URI=$$(terraform -chdir=infra output -raw ecr_repo_url); \
+	ECR_REPO_URI=$$(terraform -chdir=$(TF_DIR) output -raw ecr_repo_url); \
 	echo "Pushing $$ECR_REPO_URI:$(IMAGE_TAG)"; \
 	$(DOCKER) push $$ECR_REPO_URI:$(IMAGE_TAG)
+
+# New docker-build/docker-push targets per env
+## Build (env-aware)
+docker-build:
+	@ECR=$$(terraform -chdir=$(TF_DIR) output -raw ecr_repo_url); \
+	$(DOCKER) build -t $$ECR:$(IMAGE_TAG) .
+
+## Push (env-aware)
+docker-push: ecr-login
+	@ECR=$$(terraform -chdir=$(TF_DIR) output -raw ecr_repo_url); \
+	$(DOCKER) push $$ECR:$(IMAGE_TAG)
 
 # Deploy new image (push to ECR). App Runner is configured with auto_deployments_enabled, so this triggers a new deployment.
 ## Build+push to trigger App Runner deployment
@@ -122,78 +128,45 @@ deploy: build push
 	@echo "Deployment triggered by ECR image push. App Runner will roll out automatically."
 
 # Full bootstrap from zero: create ECR, build+push initial image, then create the rest of the infra and service
-## Create ECR, build+push, then apply infra and print URL
-up: bootstrap-ecr build push tf-apply get-url
-	@echo "Up completed. Service URL printed above."
+## Deploy flow: ensure ECR, build & push image, then apply infra
+up: tf-ensure-ecr docker-build docker-push tf-apply
 
 # Read-only helpers (get-*)
 ## Print service URL (read-only)
 get-url:
-	@URL=$$(terraform -chdir=infra output -raw service_url 2>/dev/null || true); \
-	if [ -z "$$URL" ]; then echo "No service URL found. Did you run 'make up' or 'make tf-apply'?"; exit 1; fi; \
-	case "$$URL" in http://*|https://*) : ;; *) URL="https://$$URL";; esac; \
-	echo "$$URL"
+	@terraform -chdir=$(TF_DIR) output -raw service_url
 
 
 ## Simple smoke test: curl the service URL (read-only)
 get-curl:
-	@URL=$$(terraform -chdir=infra output -raw service_url 2>/dev/null || true); \
-	if [ -z "$$URL" ]; then echo "No service URL found. Did you run 'make up' or 'make tf-apply'?"; exit 1; fi; \
-	case "$$URL" in http://*|https://*) : ;; *) URL="https://$$URL";; esac; \
+	@URL=$$(terraform -chdir=$(TF_DIR) output -raw service_url 2>/dev/null || true); \
+	test -n "$$URL" || (echo "Service URL not found. Did you run 'make up ENV=$(ENV)'?"; exit 1); \
 	echo "GET $$URL"; \
 	curl -sS -L "$$URL" | jq . || curl -sS -L "$$URL"
 
 ## Basic HTTP status check against the service URL (read-only)
 get-status:
-	@URL=$$(terraform -chdir=infra output -raw service_url 2>/dev/null || true); \
-	if [ -z "$$URL" ]; then echo "No service URL found. Did you run 'make up' or 'make tf-apply'?"; exit 1; fi; \
-	case "$$URL" in http://*|https://*) : ;; *) URL="https://$$URL";; esac; \
+	@URL=$$(terraform -chdir=$(TF_DIR) output -raw service_url); \
+	test -n "$$URL" || (echo "Service URL not found. Did you run 'make up ENV=$(ENV)'?"; exit 1); \
 	CODE=$$(curl -s -o /dev/null -w "%{http_code}" -L "$$URL"); \
 	echo "Status: $$CODE | URL: $$URL"
 
 ## Print current AWS identity (read-only)
 get-identity:
-	@set -euo pipefail; \
-	terraform -chdir=infra apply -refresh-only -target=data.aws_caller_identity.current -auto-approve >/dev/null; \
-	echo "AWS account: $$(terraform -chdir=infra output -raw aws_account_id)"; \
-	echo "Caller ARN : $$(terraform -chdir=infra output -raw aws_caller_arn)"; \
-	echo "User ID    : $$(terraform -chdir=infra output -raw aws_caller_user_id)"
+	@aws sts get-caller-identity --output table
 
 
-# Clean temporary and reproducible artifacts to restore a fresh checkout state
-## Remove local Terraform state/cache and typical build artifacts
+# Clean Terraform env roots only (local state)
 clean:
-	@set -euo pipefail; \
-	echo "Cleaning reproducible and temporary files..."; \
-	# Terraform working dirs (root + infra)
-	find . -type d -name ".terraform" -prune -exec rm -rf {} + 2>/dev/null || true; \
-	# Terraform state, backups, locks (root + infra)
-	rm -f terraform.tfstate terraform.tfstate.backup .terraform.tfstate.lock.info 2>/dev/null || true; \
-	rm -f infra/terraform.tfstate infra/terraform.tfstate.backup infra/.terraform.tfstate.lock.info 2>/dev/null || true; \
-	# Terraform workspace-local state dirs (root + infra)
-	rm -rf terraform.tfstate.d infra/terraform.tfstate.d 2>/dev/null || true; \
-	# Terraform plans (root + infra)
-	rm -f *.tfplan plan.out infra/*.tfplan infra/plan.out 2>/dev/null || true; \
-	# Terraform crash logs (root + infra)
-	rm -f crash.log crash.*.log infra/crash.log infra/crash.*.log 2>/dev/null || true; \
-	# Composer artifacts
-	rm -rf vendor 2>/dev/null || true; \
-	rm -f composer.lock composer.phar 2>/dev/null || true; \
-	# JS artifacts (if any)
-	rm -rf node_modules 2>/dev/null || true; \
-	rm -f package-lock.json yarn.lock pnpm-lock.yaml 2>/dev/null || true; \
-	# PHPUnit cache
-	rm -f .phpunit.result.cache 2>/dev/null || true; \
-	# OS cruft
-	find . -name ".DS_Store" -delete 2>/dev/null || true; \
-	find . -name "Thumbs.db" -delete 2>/dev/null || true; \
-	echo "Clean complete."
+	@find infra/live -type d -name ".terraform" -prune -exec rm -rf {} +; \
+	find infra/live -type f -name ".terraform.lock.hcl" -delete; \
+	find infra/live -type f -name "terraform.tfstate*" -delete
 
 ## Remove local ECR-tagged image and dangling images (best-effort)
 docker-clean-local:
 	@set -euo pipefail; \
 	if command -v $(DOCKER) >/dev/null 2>&1; then \
-		ECR_REPO_URI=$$(terraform -chdir=infra output -raw ecr_repo_url 2>/dev/null || true); \
+		ECR_REPO_URI=$$(terraform -chdir=$(TF_DIR) output -raw ecr_repo_url 2>/dev/null || true); \
 		if [ -n "$$ECR_REPO_URI" ]; then \
 			echo "Removing local image $$ECR_REPO_URI:$(IMAGE_TAG) (if present)"; \
 			$(DOCKER) image rm -f "$$ECR_REPO_URI:$(IMAGE_TAG)" 2>/dev/null || true; \
@@ -202,11 +175,7 @@ docker-clean-local:
 		$(DOCKER) image prune -f >/dev/null 2>&1 || true; \
 	fi
 
-## Run 'down' then 'clean' and also drop lock files & local-only infra configs + local image
-pristine: down clean docker-clean-local
-	@set -euo pipefail; \
-	# Remove local variable files and non-versioned backend configs inside infra
-	rm -f infra/*.tfvars infra/*.auto.tfvars infra/backend.hcl infra/backend_s3.tf 2>/dev/null || true; \
-	# Remove provider lock files (root + infra)
-	rm -f .terraform.lock.hcl infra/.terraform.lock.hcl 2>/dev/null || true; \
-	echo "Repository workspace is now pristine (nuked generated artifacts and locks)."
+# Pristine cleanup
+pristine: down clean
+
+
