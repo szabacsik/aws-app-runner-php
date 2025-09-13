@@ -127,25 +127,29 @@ Important notes (networking and cost)
 
   Revert to the defaults after the demo.
 
-## Environments (development, staging, production)
-This project uses a Terraform variable `environment` to tailor names and tags. Default is `development`.
+## Environments (per-environment Terraform roots)
+We now use one Terraform root per environment, each with its own local state (no remote backend or DynamoDB locks at this stage):
 
-There are two common ways to keep environments isolated:
-- Local state with Terraform workspaces (simple, single‑user)
-  - Create/select a workspace inside `infra`:
-    - `terraform -chdir=infra workspace new staging` (one‑time)
-    - `terraform -chdir=infra workspace select staging`
-  - Run Make targets with the matching environment variable:
-    - `TF_VAR_environment=staging make up`
-- Remote state per environment (team‑ready)
-  - Copy `infra/backend_s3.tf.example` to `infra/backend_s3.tf`.
-  - Copy `infra/backend.hcl.example` to `infra/backend.hcl` and edit bucket/key/region/table.
-  - Initialize the backend (one‑time):
-    - `terraform -chdir=infra init -backend-config=backend.hcl`
-  - Then run Make targets, passing the environment:
-    - `TF_VAR_environment=production make up`
+```
+infra/modules/app_runner_service
+infra/live/development
+infra/live/staging
+infra/live/qa
+infra/live/production
+```
 
-Tips
+Usage examples:
+- Default environment is `development` (Makefile: `ENV ?= development`).
+- Initialize and format:
+  - `make tf-init ENV=development`
+- Bring everything up (creates ECR, builds & pushes, applies infra) and print URL:
+  - `make up ENV=development AWS_REGION=eu-central-1 IMAGE_TAG=latest`
+- Deploy a new tag to staging:
+  - `make up ENV=staging IMAGE_TAG=v1.2.3`
+
+Notes:
+- State is local per environment folder (e.g., `infra/live/development/terraform.tfstate`).
+- Remote state + DynamoDB locks can be introduced later; out of scope here.
 - You can also use separate AWS profiles per environment and/or separate AWS accounts.
 - Region defaults to `eu-central-1`; override with `AWS_REGION=...`.
 
@@ -194,23 +198,21 @@ Examples
 - Keep using `latest` and redeploy:
   - `make deploy` (pushes `latest`, App Runner auto‑deploys the new digest)
 
-## End‑to‑end workflows
+## End‑to‑end workflows (env‑rooted)
 Create a new environment (example: staging)
-1. (Optional) Create/select a Terraform workspace: `terraform -chdir=infra workspace new staging` then `terraform -chdir=infra workspace select staging`.
-2. Bring everything up for staging: `TF_VAR_environment=staging make up`.
-3. Get URL and test: `make get-url && make get-status && make get-curl`.
+1. Bring everything up for staging: `make up ENV=staging`.
+2. Get URL and test: `make get-url ENV=staging && make get-status ENV=staging && make get-curl ENV=staging`.
 
 Update PHP code only
 1. Edit files under `app/public` (e.g., `index.php`).
-2. Deploy: `make deploy` (or `IMAGE_TAG=v2 make deploy` + `TF_VAR_image_tag=v2 make tf-apply`).
+2. Deploy a new image tag: `make up ENV=<env> IMAGE_TAG=v2` (App Runner auto‑deploys on image push).
 
 Change infrastructure
-1. Edit Terraform under `infra/`.
-2. Plan and apply: `make tf-plan` then `make tf-apply`.
+1. Edit Terraform under the selected env root (e.g., `infra/live/staging/*.tf`) or in the shared module under `infra/modules/app_runner_service`.
+2. Plan and apply: `make tf-plan ENV=<env>` then `make tf-apply ENV=<env>`.
 
 Switch environments
-- With workspaces: `terraform -chdir=infra workspace select production` then `TF_VAR_environment=production make tf-apply`.
-- With remote state: use distinct `key` paths per env in `infra/backend.hcl`, then run `TF_VAR_environment=<env> make ...`.
+- Change the `ENV` value in Make commands, e.g., `ENV=production`.
 
 Full teardown and safe cleanup
 1. Destroy cloud resources: `make down` (ECR repo is force‑deleted if non‑empty).
@@ -249,20 +251,12 @@ Verification examples:
 - `curl -s https://<service-url>/ | jq .app`  # inspect app block
 
 ## Files and what they do
-- `Makefile` — One‑stop command hub for Terraform and Docker flows; exports common variables to Terraform.
+- `Makefile` — Env‑rooted commands for Terraform and Docker; uses `TF_DIR := infra/live/$(ENV)`.
 - `Dockerfile` — Extends the base image; copies `app/public` into `/var/www/html`; exposes port 8080.
-- `.dockerignore` — Reduces build context; excludes Git metadata, `infra/`, Terraform state files, etc.
+- `.dockerignore` — Reduces build context; excludes Git metadata and Terraform state files.
 - `app/public/index.php` — Phalcon Micro app with `GET /`, `GET /health`, `HEAD /health`, and a JSON 404 handler.
-- `infra/versions.tf` — Terraform core and AWS provider version constraints; default resource tags.
-- `infra/variables.tf` — Inputs: `project_name`, `environment`, `owner`, `aws_region`, `vpc_cidr`, `private_subnet_cidrs`, `public_subnet_cidr`, `image_tag`. (Some VPC inputs are unused by default.)
-- `infra/vpc.tf` — Empty placeholder by default (no VPC/NAT created).
-- `infra/ecr.tf` — ECR repository and lifecycle policy (scan on push; keep last 10 images; force delete).
-- `infra/iam.tf` — IAM role and policy attachment for App Runner to access ECR.
-- `infra/ecr_auth.tf` — Data sources for ECR auth token and current caller identity.
-- `infra/apprunner.tf` — App Runner service, Auto Scaling config, health check.
-- `infra/outputs.tf` — Service URL, ECR repo URL, AWS identity and ECR auth outputs.
-- `infra/backend_s3.tf.example` — Optional S3 backend stub (copy to enable remote state).
-- `infra/backend.hcl.example` — Example backend config for S3 + DynamoDB locking.
+- `infra/modules/app_runner_service/` — Reusable Terraform module (ECR, IAM for App Runner, autoscaling config, App Runner service, outputs).
+- `infra/live/<env>/` — Environment roots: `development`, `staging`, `qa`, `production`. Each has `providers.tf`, `main.tf`, `outputs.tf`. State is local per env folder.
 - `README.md` — You are here.
 
 ## AWS credentials (cheat‑sheet)
@@ -281,16 +275,13 @@ Commands:
 ```bash
 # Select the profile (example: private)
 export AWS_PROFILE=private
-
-# Optional, if not defined in your config
 export AWS_REGION=eu-central-1
 
 # Verify
 aws sts get-caller-identity
 
-# Terraform
-terraform -chdir=infra init
-terraform -chdir=infra plan
+# Terraform (env-rooted via Makefile)
+make tf-plan ENV=development
 ```
 
 Short note: Do not use the default profile; always set a named profile via the AWS_PROFILE variable.
